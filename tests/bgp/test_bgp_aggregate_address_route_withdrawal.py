@@ -14,14 +14,13 @@ import logging
 import pytest
 from natsort import natsorted
 
-# Shared helpers from the base aggregate-address test module
-from test_bgp_aggregate_address import (
+# Shared helpers from the aggregate-address helpers module
+from bgp_aggregate_helpers import (  # noqa: F401
     AggregateCfg,
     gcu_add_aggregate,
     safe_remove_aggregate,
+    setup_teardown,
 )
-# Import autouse fixture so pytest discovers it for this module
-from test_bgp_aggregate_address import setup_teardown  # noqa: F401
 from tests.common.helpers.assertions import pytest_assert
 from tests.common.helpers.bgp_routing import inject_routes, verify_route_on_neighbors
 from tests.common.helpers.constants import UPSTREAM_NEIGHBOR_MAP, DOWNSTREAM_NEIGHBOR_MAP

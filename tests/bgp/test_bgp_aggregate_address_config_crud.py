@@ -13,7 +13,7 @@ import logging
 import pytest
 from natsort import natsorted
 
-from test_bgp_aggregate_address import (
+from bgp_aggregate_helpers import (  # noqa: F401
     AggregateCfg,
     gcu_add_aggregate,
     gcu_remove_aggregate,
@@ -21,8 +21,8 @@ from test_bgp_aggregate_address import (
     gcu_remove_multiple_aggregates,
     gcu_update_aggregate_field,
     safe_remove_aggregate,
+    setup_teardown,
 )
-from test_bgp_aggregate_address import setup_teardown  # noqa: F401
 from tests.common.helpers.assertions import pytest_assert
 from tests.common.helpers.bgp_routing import inject_routes, verify_route_on_neighbors
 from tests.common.helpers.constants import UPSTREAM_NEIGHBOR_MAP, DOWNSTREAM_NEIGHBOR_MAP
