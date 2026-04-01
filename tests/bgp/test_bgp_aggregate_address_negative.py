@@ -47,7 +47,6 @@ logger = logging.getLogger(__name__)
 pytestmark = [
     pytest.mark.topology("m1"),
     pytest.mark.device_type("vs"),
-    pytest.mark.disable_loganalyzer,
 ]
 
 # ExaBGP base ports
@@ -64,9 +63,9 @@ CONTRIBUTING_V4 = [
 # Routes that fall *outside* the aggregate range
 NON_CONTRIBUTING_V4 = ["10.200.1.0/24"]
 
-# Two aggregates for the overlapping test — independent, non-containing
-AGGR_EXTRA_V4 = "10.200.0.0/16"
-CONTRIBUTING_EXTRA_V4 = ["10.200.1.0/24"]
+# Nested aggregate for the overlapping test — contained within AGGR_V4
+AGGR_EXTRA_V4 = "10.100.1.0/24"
+CONTRIBUTING_EXTRA_V4 = ["10.100.1.0/25", "10.100.1.128/25"]
 
 
 @pytest.fixture(scope="module")
@@ -113,8 +112,29 @@ def negative_setup(duthosts, rand_one_dut_hostname, nbrhosts, tbinfo):
 # ===================================================================
 # TC 8.1 — Add aggregate with invalid prefix
 # ===================================================================
+@pytest.mark.disable_loganalyzer
+@pytest.mark.parametrize("invalid_prefix", [
+    pytest.param("999.999.999.999/33", id="garbage-ip-and-mask"),
+    pytest.param("10.100.0.256/32", id="octet-out-of-range"),
+    pytest.param("10.100.0.1/33", id="mask-exceeds-32"),
+    pytest.param("10.100.0.0", id="missing-prefix-length"),
+    pytest.param("abc.def.0.0/16", id="non-numeric-octets"),
+    pytest.param("10.100.0/24", id="too-few-octets"),
+    pytest.param("10.100.0.0/-1", id="negative-mask"),
+    # TODO: host-bits-set cases — currently YANG (inet:ipv4-prefix)
+    # does not enforce canonical form and FRR silently auto-corrects
+    # (e.g. 10.100.0.1/24 -> 10.100.0.0/24,
+    #        10.100.1.0/23 -> 10.100.0.0/23).  Neither GCU nor bgpcfgd
+    # rejects these.  Pending bgpcfgd fix to add
+    # ipaddress.ip_network(prefix, strict=True) validation in
+    # address_set_handler; once landed, uncomment and update the test
+    # to verify rejection via loganalyzer expected error pattern.
+    pytest.param("10.100.0.1/24", id="host-bits-set-24"),
+    pytest.param("10.100.1.0/23", id="host-bits-set-23"),
+])
 def test_invalid_prefix_rejected(
-    duthosts, rand_one_dut_hostname, nbrhosts, negative_setup
+    duthosts, rand_one_dut_hostname, nbrhosts, negative_setup,
+    invalid_prefix,
 ):
     """
     TC 8.1: GCU must reject a patch that adds an aggregate with an
@@ -123,7 +143,6 @@ def test_invalid_prefix_rejected(
     """
     duthost = duthosts[rand_one_dut_hostname]
     setup = negative_setup
-    invalid_prefix = "999.999.999.999/33"
 
     # Snapshot CONFIG_DB before the attempt
     db_before = dump_db(duthost, "CONFIG_DB", BGP_AGGREGATE_ADDRESS)
@@ -326,14 +345,15 @@ def test_overlapping_aggregates(
     duthosts, rand_one_dut_hostname, nbrhosts, ptfhost, negative_setup
 ):
     """
-    TC 8.5: Two independent aggregates (10.100.0.0/16 and
-    10.200.0.0/16), each with their own contributing routes, must both
-    be received on M2 independently.  Removing one must not affect the
-    other.
+    TC 8.5: Two overlapping aggregates where one is nested inside the
+    other (10.100.0.0/16 and 10.100.1.0/24).  Both must be received
+    on M2.  Removing the more-specific must not affect the broader
+    aggregate.
     """
     duthost = duthosts[rand_one_dut_hostname]
     setup = negative_setup
-    contributing_a = CONTRIBUTING_V4[:2]
+    # Use /16 contributing routes that fall outside the nested /24
+    contributing_a = CONTRIBUTING_V4[1:3]
     contributing_b = CONTRIBUTING_EXTRA_V4
 
     cfg_a = AggregateCfg(
@@ -364,15 +384,15 @@ def test_overlapping_aggregates(
             AGGR_EXTRA_V4, expected_present=True,
         )
 
-        # Remove first, second must stay
-        gcu_remove_aggregate(duthost, AGGR_V4)
+        # Remove more-specific; broader must stay
+        gcu_remove_aggregate(duthost, AGGR_EXTRA_V4)
         verify_route_on_neighbors(
             nbrhosts, setup["m2_neighbors"],
-            AGGR_V4, expected_present=False, timeout=15,
+            AGGR_EXTRA_V4, expected_present=False, timeout=15,
         )
         verify_route_on_neighbors(
             nbrhosts, setup["m2_neighbors"],
-            AGGR_EXTRA_V4, expected_present=True,
+            AGGR_V4, expected_present=True,
         )
     finally:
         inject_routes(
