@@ -17,20 +17,24 @@ import time
 import pytest
 from natsort import natsorted
 
-from bgp_aggregate_helpers import (  # noqa: F401
+from bgp_aggregate_helpers import (
     AggregateCfg,
     BGP_AGGREGATE_ADDRESS,
+    PLACEHOLDER_PREFIX,
     dump_db,
     gcu_add_aggregate,
+    gcu_add_placeholder_aggregate,
     gcu_remove_aggregate,
     safe_remove_aggregate,
-    setup_teardown,
 )
 
 from tests.common.gcu_utils import (
     apply_patch,
     generate_tmpfile,
     delete_tmpfile,
+    create_checkpoint,
+    rollback_or_reload,
+    delete_checkpoint,
 )
 from tests.common.helpers.assertions import pytest_assert
 from tests.common.helpers.bgp_routing import (
@@ -63,6 +67,27 @@ NON_CONTRIBUTING_V4 = ["10.200.1.0/24"]
 # Nested aggregate for the overlapping test — contained within AGGR_V4
 AGGR_EXTRA_V4 = "10.100.1.0/24"
 CONTRIBUTING_EXTRA_V4 = ["10.100.1.0/25", "10.100.1.128/25"]
+
+
+@pytest.fixture(scope="module", autouse=True)
+def setup_teardown(duthosts, rand_one_dut_hostname):
+    """Create checkpoint before tests, rollback after."""
+    duthost = duthosts[rand_one_dut_hostname]
+    create_checkpoint(duthost)
+
+    # Add placeholder aggregate to avoid GCU removing empty table
+    default_aggregates = dump_db(
+        duthost, "CONFIG_DB", BGP_AGGREGATE_ADDRESS
+    )
+    if not default_aggregates:
+        gcu_add_placeholder_aggregate(duthost, PLACEHOLDER_PREFIX)
+
+    yield
+
+    try:
+        rollback_or_reload(duthost, fail_on_rollback_error=False)
+    finally:
+        delete_checkpoint(duthost)
 
 
 @pytest.fixture(scope="module")
