@@ -27,7 +27,7 @@ from tests.common.helpers.constants import UPSTREAM_NEIGHBOR_MAP, DOWNSTREAM_NEI
 
 logger = logging.getLogger(__name__)
 
-pytestmark = [pytest.mark.topology("m1"), pytest.mark.device_type("vs")]
+pytestmark = [pytest.mark.topology("m1")]
 
 # ExaBGP base ports (downstream PTF ports)
 EXABGP_BASE_PORT = 5000

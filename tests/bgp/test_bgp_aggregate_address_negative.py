@@ -44,10 +44,7 @@ from tests.common.helpers.constants import (
 
 logger = logging.getLogger(__name__)
 
-pytestmark = [
-    pytest.mark.topology("m1"),
-    pytest.mark.device_type("vs"),
-]
+pytestmark = [pytest.mark.topology("m1")]
 
 # ExaBGP base ports
 EXABGP_BASE_PORT = 5000
@@ -110,7 +107,7 @@ def negative_setup(duthosts, rand_one_dut_hostname, nbrhosts, tbinfo):
 
 
 # ===================================================================
-# TC 8.1 — Add aggregate with invalid prefix
+# TC 8.1a — Add aggregate with invalid prefix (rejected by GCU/YANG)
 # ===================================================================
 @pytest.mark.disable_loganalyzer
 @pytest.mark.parametrize("invalid_prefix", [
@@ -121,23 +118,13 @@ def negative_setup(duthosts, rand_one_dut_hostname, nbrhosts, tbinfo):
     pytest.param("abc.def.0.0/16", id="non-numeric-octets"),
     pytest.param("10.100.0/24", id="too-few-octets"),
     pytest.param("10.100.0.0/-1", id="negative-mask"),
-    # TODO: host-bits-set cases — currently YANG (inet:ipv4-prefix)
-    # does not enforce canonical form and FRR silently auto-corrects
-    # (e.g. 10.100.0.1/24 -> 10.100.0.0/24,
-    #        10.100.1.0/23 -> 10.100.0.0/23).  Neither GCU nor bgpcfgd
-    # rejects these.  Pending bgpcfgd fix to add
-    # ipaddress.ip_network(prefix, strict=True) validation in
-    # address_set_handler; once landed, uncomment and update the test
-    # to verify rejection via loganalyzer expected error pattern.
-    pytest.param("10.100.0.1/24", id="host-bits-set-24"),
-    pytest.param("10.100.1.0/23", id="host-bits-set-23"),
 ])
-def test_invalid_prefix_rejected(
+def test_invalid_prefix_rejected_by_gcu(
     duthosts, rand_one_dut_hostname, nbrhosts, negative_setup,
     invalid_prefix,
 ):
     """
-    TC 8.1: GCU must reject a patch that adds an aggregate with an
+    TC 8.1a: GCU must reject a patch that adds an aggregate with an
     invalid prefix.  CONFIG_DB must remain unchanged and no aggregate
     route must appear on M2.
     """
@@ -193,6 +180,68 @@ def test_invalid_prefix_rejected(
 
 
 # ===================================================================
+# TC 8.1b — Host-bits-set prefix passes GCU but rejected by bgpcfgd
+# ===================================================================
+@pytest.mark.parametrize("invalid_prefix,corrected_prefix", [
+    pytest.param("10.100.0.1/24", "10.100.0.0/24", id="host-bits-set-24"),
+    pytest.param("10.100.1.0/23", "10.100.0.0/23", id="host-bits-set-23"),
+])
+def test_invalid_prefix_rejected_by_bgpcfgd(
+    duthosts, rand_one_dut_hostname, nbrhosts, negative_setup,
+    invalid_prefix, corrected_prefix, loganalyzer,
+):
+    """
+    TC 8.1b: YANG does not enforce canonical prefix form, so GCU
+    accepts host-bits-set prefixes into CONFIG_DB.  However bgpcfgd
+    validates via ipaddress.ip_network(strict=True) and rejects them
+    before pushing to FRR.  The syslog must contain the bgpcfgd
+    rejection message.  Neither the invalid prefix nor the
+    FRR-auto-corrected prefix (e.g. 10.100.0.1/24 -> 10.100.0.0/24)
+    must appear on M2.
+    """
+    duthost = duthosts[rand_one_dut_hostname]
+    setup = negative_setup
+
+    # Tell LogAnalyzer to expect the bgpcfgd rejection message.
+    # LogAnalyzer.init() already marked the log start position during
+    # fixture setup; analyze() runs at teardown and checks between
+    # start and current.  So expect_regex must be set before the
+    # action that produces the log.
+    if loganalyzer:
+        loganalyzer[duthost.hostname].expect_regex.extend([
+            r".*AggregateAddressMgr::invalid aggregate prefix.*",
+        ])
+
+    cfg = AggregateCfg(
+        prefix=invalid_prefix, bbr_required=False,
+        summary_only=False, as_set=False,
+    )
+    try:
+        gcu_add_aggregate(duthost, cfg)
+
+        # Neither the original nor the FRR-auto-corrected prefix
+        # should appear.  If bgpcfgd validation is bypassed, FRR
+        # silently rewrites host-bits-set prefixes to their network
+        # address (e.g. 10.100.0.1/24 -> 10.100.0.0/24).
+        verify_route_on_neighbors(
+            nbrhosts,
+            setup["m2_neighbors"],
+            invalid_prefix,
+            expected_present=False,
+            timeout=15,
+        )
+        verify_route_on_neighbors(
+            nbrhosts,
+            setup["m2_neighbors"],
+            corrected_prefix,
+            expected_present=False,
+            timeout=10,
+        )
+    finally:
+        safe_remove_aggregate(duthost, invalid_prefix)
+
+
+# ===================================================================
 # TC 8.2 — Duplicate aggregate add with different parameters (update)
 # ===================================================================
 def test_duplicate_add_updates_params(
@@ -220,17 +269,21 @@ def test_duplicate_add_updates_params(
     try:
         inject_routes(setup, ptfhost, contributing, "announce")
 
+        # Wait for contributing routes to propagate before adding
+        # the aggregate — the aggregate won't be generated until at
+        # least one contributing route exists in the DUT's BGP table.
+        for route in contributing:
+            verify_route_on_neighbors(
+                nbrhosts, setup["m2_neighbors"],
+                route, expected_present=True,
+            )
+
         # First add — summary-only=false
         gcu_add_aggregate(duthost, cfg_v1)
         verify_route_on_neighbors(
             nbrhosts, setup["m2_neighbors"],
             AGGR_V4, expected_present=True,
         )
-        for route in contributing:
-            verify_route_on_neighbors(
-                nbrhosts, setup["m2_neighbors"],
-                route, expected_present=True,
-            )
 
         # Re-add with summary-only=true (update)
         gcu_add_aggregate(duthost, cfg_v2)
@@ -370,6 +423,14 @@ def test_overlapping_aggregates(
             setup, ptfhost,
             contributing_a + contributing_b, "announce",
         )
+
+        # Wait for contributing routes to propagate before adding
+        # the aggregates.
+        for route in contributing_a + contributing_b:
+            verify_route_on_neighbors(
+                nbrhosts, setup["m2_neighbors"],
+                route, expected_present=True,
+            )
 
         gcu_add_aggregate(duthost, cfg_a)
         gcu_add_aggregate(duthost, cfg_b)
