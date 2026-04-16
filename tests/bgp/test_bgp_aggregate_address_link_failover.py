@@ -57,7 +57,12 @@ INTF_STATE_WAIT_TIMEOUT = 90
 
 @pytest.fixture(scope="module", autouse=True)
 def setup_teardown(duthost):
-    """Create checkpoint before tests, rollback after."""
+    """Checkpoint before tests, rollback after.
+
+    Link-failover tests shut down and restore DUT interfaces, which can leave
+    stale BGP aggregate state if a test fails mid-way.  The checkpoint/rollback
+    ensures CONFIG_DB is restored to a clean state regardless of test outcome.
+    """
     create_checkpoint(duthost)
     default_aggregates = dump_db(duthost, "CONFIG_DB", BGP_AGGREGATE_ADDRESS)
     if not default_aggregates:
